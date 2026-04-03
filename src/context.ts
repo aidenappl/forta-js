@@ -9,12 +9,12 @@ const FORTA_USER_KEY = Symbol.for("forta-user");
 
 /** Attaches the Forta user ID to the request object. */
 export function setFortaId(req: unknown, id: number): void {
-  (req as Record<symbol, unknown>)[FORTA_ID_KEY] = id;
+    (req as Record<symbol, unknown>)[FORTA_ID_KEY] = id;
 }
 
 /** Attaches the full Forta User to the request object. */
 export function setFortaUser(req: unknown, user: User): void {
-  (req as Record<symbol, unknown>)[FORTA_USER_KEY] = user;
+    (req as Record<symbol, unknown>)[FORTA_USER_KEY] = user;
 }
 
 /**
@@ -23,8 +23,8 @@ export function setFortaUser(req: unknown, user: User): void {
  * authenticated.
  */
 export function getFortaIdFromRequest(req: unknown): [number, boolean] {
-  const id = (req as Record<symbol, unknown>)[FORTA_ID_KEY];
-  return typeof id === "number" ? [id, true] : [0, false];
+    const id = (req as Record<symbol, unknown>)[FORTA_ID_KEY];
+    return typeof id === "number" ? [id, true] : [0, false];
 }
 
 /**
@@ -33,8 +33,8 @@ export function getFortaIdFromRequest(req: unknown): [number, boolean] {
  * (e.g. local JWT validation without fetchUserOnProtect).
  */
 export function getUserFromRequest(req: unknown): [User | null, boolean] {
-  const user = (req as Record<symbol, unknown>)[FORTA_USER_KEY] as
-    | User
-    | undefined;
-  return user ? [user, true] : [null, false];
+    const user = (req as Record<symbol, unknown>)[FORTA_USER_KEY] as
+        | User
+        | undefined;
+    return user ? [user, true] : [null, false];
 }

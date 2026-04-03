@@ -29,9 +29,9 @@ import type { FortaConfig } from "./config";
 import { getFortaIdFromRequest, getUserFromRequest } from "./context";
 import { writeJsonError } from "./errors";
 import {
-  createLoginHandler,
-  createCallbackHandler,
-  createLogoutHandler,
+    createLoginHandler,
+    createCallbackHandler,
+    createLogoutHandler,
 } from "./handlers";
 import { extractToken } from "./helpers";
 import { createProtect } from "./middleware";
@@ -40,7 +40,17 @@ import type { RequestHandler } from "./middleware";
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
 export type { FortaConfig } from "./config";
-export type { User, UserMetadata, TokenPair, AuthResponse } from "./types";
+export type {
+    User,
+    UserPublic,
+    UserMetadata,
+    UserStatus,
+    TokenPair,
+    AuthResponse,
+    ApiResponse,
+    ApiSuccess,
+    ApiError,
+} from "./types";
 export type { RequestHandler } from "./middleware";
 export { getFortaIdFromRequest, getUserFromRequest } from "./context";
 export { FortaClient } from "./client";
@@ -56,14 +66,14 @@ let defaultClient: FortaClient | null = null;
  * It must be called once before any other function in this package.
  */
 function setup(config: FortaConfig): void {
-  defaultClient = new FortaClient(config);
+    defaultClient = new FortaClient(config);
 }
 
 function requireClient(): FortaClient {
-  if (!defaultClient) {
-    throw ErrNotConfigured;
-  }
-  return defaultClient;
+    if (!defaultClient) {
+        throw ErrNotConfigured;
+    }
+    return defaultClient;
 }
 
 /**
@@ -71,7 +81,7 @@ function requireClient(): FortaClient {
  * /healthcheck endpoint.
  */
 async function ping(): Promise<void> {
-  return requireClient().ping();
+    return requireClient().ping();
 }
 
 /**
@@ -79,11 +89,11 @@ async function ping(): Promise<void> {
  * endpoint. A CSRF state token is stored in an HttpOnly cookie.
  */
 function loginHandler(req: IncomingMessage, res: ServerResponse): void {
-  if (!defaultClient) {
-    writeJsonError(res, 500, "forta: not configured");
-    return;
-  }
-  createLoginHandler(defaultClient)(req, res);
+    if (!defaultClient) {
+        writeJsonError(res, 500, "forta: not configured");
+        return;
+    }
+    createLoginHandler(defaultClient)(req, res);
 }
 
 /**
@@ -91,14 +101,14 @@ function loginHandler(req: IncomingMessage, res: ServerResponse): void {
  * Validates CSRF state, exchanges the code, sets token cookies, and redirects.
  */
 async function callbackHandler(
-  req: IncomingMessage,
-  res: ServerResponse
+    req: IncomingMessage,
+    res: ServerResponse
 ): Promise<void> {
-  if (!defaultClient) {
-    writeJsonError(res, 500, "forta: not configured");
-    return;
-  }
-  return createCallbackHandler(defaultClient)(req, res);
+    if (!defaultClient) {
+        writeJsonError(res, 500, "forta: not configured");
+        return;
+    }
+    return createCallbackHandler(defaultClient)(req, res);
 }
 
 /**
@@ -106,11 +116,11 @@ async function callbackHandler(
  * configured post-logout redirect.
  */
 function logoutHandler(req: IncomingMessage, res: ServerResponse): void {
-  if (!defaultClient) {
-    writeJsonError(res, 500, "forta: not configured");
-    return;
-  }
-  createLogoutHandler(defaultClient)(req, res);
+    if (!defaultClient) {
+        writeJsonError(res, 500, "forta: not configured");
+        return;
+    }
+    createLogoutHandler(defaultClient)(req, res);
 }
 
 /**
@@ -122,12 +132,12 @@ function logoutHandler(req: IncomingMessage, res: ServerResponse): void {
  * getFortaIdFromRequest(req).
  */
 function protect(next: RequestHandler): RequestHandler {
-  if (!defaultClient) {
-    return (_req: IncomingMessage, res: ServerResponse) => {
-      writeJsonError(res, 500, "forta: not configured");
-    };
-  }
-  return createProtect(defaultClient)(next);
+    if (!defaultClient) {
+        return (_req: IncomingMessage, res: ServerResponse) => {
+            writeJsonError(res, 500, "forta: not configured");
+        };
+    }
+    return createProtect(defaultClient)(next);
 }
 
 /**
@@ -136,35 +146,35 @@ function protect(next: RequestHandler): RequestHandler {
  * (not just protected ones). Does not perform auto-refresh or set cookies.
  */
 async function fetchCurrentUser(req: IncomingMessage) {
-  const client = requireClient();
-  const token = extractToken(req);
-  if (!token) {
-    throw new Error("forta-js: no access token found in request");
-  }
-  return client.getUserInfo(token);
+    const client = requireClient();
+    const token = extractToken(req);
+    if (!token) {
+        throw new Error("forta-js: no access token found in request");
+    }
+    return client.getUserInfo(token);
 }
 
 // ── Default export ──────────────────────────────────────────────────────────
 
 const forta = {
-  setup,
-  ping,
-  loginHandler,
-  callbackHandler,
-  logoutHandler,
-  protect,
-  fetchCurrentUser,
-  getFortaIdFromRequest,
-  getUserFromRequest,
+    setup,
+    ping,
+    loginHandler,
+    callbackHandler,
+    logoutHandler,
+    protect,
+    fetchCurrentUser,
+    getFortaIdFromRequest,
+    getUserFromRequest,
 };
 
 export default forta;
 export {
-  setup,
-  ping,
-  loginHandler,
-  callbackHandler,
-  logoutHandler,
-  protect,
-  fetchCurrentUser,
+    setup,
+    ping,
+    loginHandler,
+    callbackHandler,
+    logoutHandler,
+    protect,
+    fetchCurrentUser,
 };

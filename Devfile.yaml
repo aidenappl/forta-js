@@ -1,0 +1,21 @@
+commands:
+    - name: start
+      description: Start the application
+      run: npm start
+      syncAfter: false
+    - name: dev
+      description: Start development server
+      run: npm run dev
+      syncAfter: false
+    - name: test
+      description: Run tests
+      run: npm test
+      syncAfter: false
+    - name: lint
+      description: Run linter
+      run: npm run lint
+      syncAfter: false
+    - name: install
+      description: Install dependencies
+      run: npm install
+      syncAfter: false

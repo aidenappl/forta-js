@@ -1,0 +1,61 @@
+{
+  "name": "forta-js",
+  "version": "1.0.0",
+  "description": "JavaScript/TypeScript client library for Forta authentication — supports Express, Node.js HTTP, and Next.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./next": {
+      "types": "./dist/next/index.d.ts",
+      "default": "./dist/next/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "forta",
+    "auth",
+    "oauth2",
+    "jwt",
+    "middleware",
+    "express",
+    "nextjs"
+  ],
+  "author": "aidenappl",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aidenappl/forta-js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cookie": "^0.7.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "@types/cookie": "^0.6.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^20.17.0",
+    "next": "^16.2.2",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "next": ">=13.0.0"
+  },
+  "peerDependenciesMeta": {
+    "next": {
+      "optional": true
+    }
+  }
+}

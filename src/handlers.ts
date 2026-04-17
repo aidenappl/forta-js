@@ -35,9 +35,14 @@ export function createLoginHandler(client: FortaClient) {
                 if (config.appDomain) {
                     origin = config.appDomain.replace(/\/+$/, "");
                 } else {
+                    const host = req.headers.host || '';
+                    if (config.cookieDomain && !host.endsWith(config.cookieDomain.replace(/^\./, ''))) {
+                        writeJsonError(res, 400, 'invalid host for first-party flow');
+                        return;
+                    }
                     const forwarded = req.headers["x-forwarded-proto"];
                     const scheme = forwarded === "https" ? "https" : "http";
-                    origin = `${scheme}://${req.headers.host}`;
+                    origin = `${scheme}://${host}`;
                 }
                 redirectBack = origin + redirectBack;
             }

@@ -371,6 +371,7 @@ export function protect(handler: ProtectedRouteHandler) {
 
         let userId = 0;
         let user: User | null = null;
+        let pendingTokens: TokenPair | null = null;
 
         if (config.jwtSigningKey) {
             // ── Local JWT validation ──────────────────────────────────────────
@@ -387,8 +388,7 @@ export function protect(handler: ProtectedRouteHandler) {
                 }
                 tokenStr = refreshResult.accessToken;
                 userId = refreshResult.userId;
-                // Note: for Next.js, refreshed cookies must be set on the final response.
-                // We'll handle this by wrapping the handler response.
+                pendingTokens = refreshResult.tokens;
             }
 
             if (config.fetchUserOnProtect) {
@@ -415,6 +415,7 @@ export function protect(handler: ProtectedRouteHandler) {
                     return jsonError(NR, 401, "session expired, please log in again");
                 }
                 userId = refreshResult.userId;
+                pendingTokens = refreshResult.tokens;
                 if (refreshResult.accessToken) {
                     try {
                         const nu = await client.getUserInfo(refreshResult.accessToken);
@@ -430,23 +431,22 @@ export function protect(handler: ProtectedRouteHandler) {
         // Call the user's handler with the identity context.
         const response = await handler(request, { fortaId: userId, user });
 
-        // If a refresh happened, we need to set the new cookies on the response.
-        // We do this by cloning the response headers and appending Set-Cookie.
-        // For simplicity, we check if a refresh token was consumed and set cookies.
-        const refreshToken = request.cookies.get(COOKIE_REFRESH_TOKEN)?.value;
-        if (refreshToken && tokenStr !== extractTokenFromNextRequest(request)) {
-            // Token was refreshed — we need to set cookies. Since NextResponse
-            // from NR.json etc. supports cookies, wrap if needed.
-            // However, the handler already returned a response. We need to copy
-            // cookies onto it. This is a bit tricky with the Fetch API Response.
-            // The cleanest approach: the handler returns NextResponse, which has .cookies
+        // If a refresh happened, set the new cookies on the response.
+        if (pendingTokens) {
             if ("cookies" in response && typeof (response as NextResponseInstance).cookies?.set === "function") {
-                const nRes = response as NextResponseInstance;
-                // Re-fetch tokens for the refreshed pair — we stored them during tryRefreshNext
-                if (_lastRefreshResult) {
-                    setAuthCookiesOnResponse(nRes, config, _lastRefreshResult.tokens);
-                    _lastRefreshResult = null;
-                }
+                setAuthCookiesOnResponse(response as NextResponseInstance, config, pendingTokens);
+            } else {
+                // Plain Response — wrap in NextResponse to attach cookies.
+                const wrapped = new (NR as unknown as { new(body: ReadableStream | null, init?: ResponseInit): NextResponseInstance })(
+                    response.body,
+                    {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: new Headers(response.headers),
+                    }
+                );
+                setAuthCookiesOnResponse(wrapped, config, pendingTokens);
+                return wrapped;
             }
         }
 
@@ -462,8 +462,6 @@ interface NextRefreshResult {
     tokens: TokenPair;
 }
 
-let _lastRefreshResult: NextRefreshResult | null = null;
-
 async function tryRefreshNext(
     client: FortaClient,
     request: NextRequest
@@ -475,13 +473,11 @@ async function tryRefreshNext(
 
     try {
         const authResp = await client.refreshTokens(refreshCookie.value);
-        const result: NextRefreshResult = {
+        return {
             userId: authResp.user.id,
             accessToken: authResp.authorization.access_token,
             tokens: authResp.authorization,
         };
-        _lastRefreshResult = result;
-        return result;
     } catch (err) {
         console.warn("forta-js: auto-refresh failed:", err);
         return null;

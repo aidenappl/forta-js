@@ -67,9 +67,9 @@ export function createFortaApiClient(config: FortaApiClientConfig) {
         }
     }
 
-    async function handle401<T>(
-        originalConfig: RequestConfig
-    ): Promise<ApiResponse<T> | null> {
+    let refreshPromise: Promise<boolean> | null = null;
+
+    async function doRefresh(): Promise<boolean> {
         try {
             const refreshRes = await fetch(`${apiUrl}${refreshEndpoint}`, {
                 method: "POST",
@@ -81,14 +81,24 @@ export function createFortaApiClient(config: FortaApiClientConfig) {
             if (refreshRes.ok) {
                 const refreshData = await refreshRes.json();
                 if (refreshData.success) {
-                    const newToken: string | null = refreshData.data?.token
-                        ?? refreshData.data?.authorization?.access_token
-                        ?? null;
-                    return await executeRequest<T>(originalConfig, newToken);
+                    return true;
                 }
             }
         } catch {
-            // Refresh failed — fall through
+            // Refresh failed
+        }
+        return false;
+    }
+
+    async function handle401<T>(
+        originalConfig: RequestConfig
+    ): Promise<ApiResponse<T> | null> {
+        if (!refreshPromise) {
+            refreshPromise = doRefresh().finally(() => { refreshPromise = null; });
+        }
+        const ok = await refreshPromise;
+        if (ok) {
+            return await executeRequest<T>(originalConfig, null);
         }
         return null;
     }

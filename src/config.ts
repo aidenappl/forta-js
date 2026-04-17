@@ -106,12 +106,29 @@ export function validateConfig(config: FortaConfig): void {
     }
 }
 
+/** Validates that a redirect is a relative path or matches appDomain. */
+function validateRedirect(redirect: string, appDomain?: string): string {
+    if (redirect.startsWith('/')) return redirect;
+    if (appDomain) {
+        try {
+            const parsed = new URL(redirect);
+            const app = new URL(appDomain);
+            if (parsed.host === app.host) return redirect;
+        } catch {
+            // Invalid URL — fall through to safe default
+        }
+    }
+    return '/';
+}
+
 /** Returns the configured post-login redirect with a safe default. */
 export function getPostLoginRedirect(config: FortaConfig): string {
-    return config.postLoginRedirect || "/";
+    const raw = config.postLoginRedirect || "/";
+    return validateRedirect(raw, config.appDomain);
 }
 
 /** Returns the configured post-logout redirect with a safe default. */
 export function getPostLogoutRedirect(config: FortaConfig): string {
-    return config.postLogoutRedirect || "/";
+    const raw = config.postLogoutRedirect || "/";
+    return validateRedirect(raw, config.appDomain);
 }

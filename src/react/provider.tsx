@@ -120,45 +120,53 @@ export function FortaProvider({ config, children }: FortaProviderProps) {
   const checkAuth = useCallback(async () => {
     const cfg = configRef.current;
 
-    // If a checkCookie is configured, skip the API call when it's absent.
-    if (cfg.checkCookie && typeof document !== "undefined") {
-      const hasCookie = document.cookie
-        .split(";")
-        .some((c) => c.trim().startsWith(`${cfg.checkCookie}=`));
-      if (!hasCookie) {
+    try {
+      // If a checkCookie is configured, skip the API call when it's absent.
+      if (cfg.checkCookie && typeof document !== "undefined") {
+        const hasCookie = document.cookie
+          .split(";")
+          .some((c) => c.trim().startsWith(`${cfg.checkCookie}=`));
+        if (!hasCookie) {
+          setIsLoggedIn(false);
+          setUser(null);
+          setIsLoading(false);
+          cfg.onAuthStateChange?.(null);
+          return;
+        }
+      }
+
+      const selfEndpoint = cfg.selfEndpoint ?? "/auth/self";
+      const res = await apiClient.fetch<User>({
+        method: "GET",
+        url: selfEndpoint,
+      });
+
+      if (res.success) {
+        setIsLoggedIn(true);
+        setUser(res.data);
+        setIsLoading(false);
+        cfg.onAuthStateChange?.(res.data);
+      } else {
         setIsLoggedIn(false);
         setUser(null);
         setIsLoading(false);
         cfg.onAuthStateChange?.(null);
-        return;
+
+        if (
+          cfg.redirectOnUnauthenticated &&
+          cfg.loginUrl &&
+          typeof window !== "undefined"
+        ) {
+          sessionStorage.setItem("returnUrl", window.location.pathname);
+          window.location.href = cfg.loginUrl;
+        }
       }
-    }
-
-    const selfEndpoint = cfg.selfEndpoint ?? "/auth/self";
-    const res = await apiClient.fetch<User>({
-      method: "GET",
-      url: selfEndpoint,
-    });
-
-    if (res.success) {
-      setIsLoggedIn(true);
-      setUser(res.data);
-      setIsLoading(false);
-      cfg.onAuthStateChange?.(res.data);
-    } else {
+    } catch (err) {
+      console.warn("forta-js: checkAuth failed:", err);
       setIsLoggedIn(false);
       setUser(null);
       setIsLoading(false);
       cfg.onAuthStateChange?.(null);
-
-      if (
-        cfg.redirectOnUnauthenticated &&
-        cfg.loginUrl &&
-        typeof window !== "undefined"
-      ) {
-        sessionStorage.setItem("returnUrl", window.location.pathname);
-        window.location.href = cfg.loginUrl;
-      }
     }
   }, [apiClient]);
 

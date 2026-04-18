@@ -1,4 +1,4 @@
-import type { ApiResponse, ApiError } from "../types";
+import type { ApiResponse } from "../types";
 
 /**
  * Configuration for the browser-side Forta API client.
@@ -15,6 +15,13 @@ export interface FortaApiClientConfig {
 
     /** Request timeout in milliseconds. Default: 10000. */
     timeout?: number;
+
+    /**
+     * Path to redirect to when a 403 response with error_code 4003 (grant
+     * revoked) is received. Default: "/unauthorized".
+     * Set to null to disable automatic redirect.
+     */
+    unauthorizedPath?: string | null;
 }
 
 /** Configuration for a single API request. */
@@ -41,12 +48,27 @@ export function createFortaApiClient(config: FortaApiClientConfig) {
         ? (config.refreshEndpoint ?? "/auth/refresh")
         : null;
     const timeout = config.timeout ?? 10_000;
+    const unauthorizedPath = config.unauthorizedPath !== null
+        ? (config.unauthorizedPath ?? "/unauthorized")
+        : null;
 
     async function fortaFetch<T>(
         requestConfig: RequestConfig
     ): Promise<ApiResponse<T>> {
         try {
             const response = await executeRequest<T>(requestConfig, null);
+
+            // Grant revoked — redirect to unauthorized page before any other handling.
+            if (
+                !response.success &&
+                response.status === 403 &&
+                response.error_code === 4003 &&
+                unauthorizedPath &&
+                typeof window !== "undefined"
+            ) {
+                window.location.href = unauthorizedPath;
+                return response;
+            }
 
             if (!response.success && response.status === 401 && refreshEndpoint) {
                 const refreshed = await handle401<T>(requestConfig);

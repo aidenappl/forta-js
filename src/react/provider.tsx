@@ -63,6 +63,14 @@ export interface FortaProviderConfig {
    * Receives the User on success, or null on failure.
    */
   onAuthStateChange?: (user: User | null) => void;
+
+  /**
+   * Path to redirect to when a 403 response with error_code 4003 (grant
+   * revoked) is received. Also used to skip the auth check when the user
+   * is already on this path. Default: "/unauthorized".
+   * Set to null to disable automatic handling.
+   */
+  unauthorizedPath?: string | null;
 }
 
 /** The auth state and helpers exposed by the Forta context. */
@@ -98,9 +106,16 @@ export const FortaContext = createContext<FortaAuthContext | null>(null);
 export interface FortaProviderProps {
   config: FortaProviderConfig;
   children: ReactNode;
+
+  /**
+   * Rendered instead of children while the initial auth check is in progress.
+   * When omitted, children render immediately (they can check isLoading via
+   * the useAuthStatus hook).
+   */
+  loadingFallback?: ReactNode;
 }
 
-export function FortaProvider({ config, children }: FortaProviderProps) {
+export function FortaProvider({ config, children, loadingFallback }: FortaProviderProps) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
@@ -113,12 +128,30 @@ export function FortaProvider({ config, children }: FortaProviderProps) {
     const clientConfig: FortaApiClientConfig = {
       apiUrl: config.apiUrl,
       refreshEndpoint: config.refreshEndpoint,
+      unauthorizedPath: config.unauthorizedPath,
     };
     return createFortaApiClient(clientConfig);
-  }, [config.apiUrl, config.refreshEndpoint]);
+  }, [config.apiUrl, config.refreshEndpoint, config.unauthorizedPath]);
 
   const checkAuth = useCallback(async () => {
     const cfg = configRef.current;
+    const unauthPath = cfg.unauthorizedPath !== null
+      ? (cfg.unauthorizedPath ?? "/unauthorized")
+      : null;
+
+    // Skip auth check when already on the unauthorized page to prevent
+    // redirect loops (the user is authenticated but not authorized).
+    if (
+      unauthPath &&
+      typeof window !== "undefined" &&
+      window.location.pathname === unauthPath
+    ) {
+      setIsLoggedIn(false);
+      setUser(null);
+      setIsLoading(false);
+      cfg.onAuthStateChange?.(null);
+      return;
+    }
 
     try {
       // If a checkCookie is configured, skip the API call when it's absent.
@@ -146,27 +179,44 @@ export function FortaProvider({ config, children }: FortaProviderProps) {
         setUser(res.data);
         setIsLoading(false);
         cfg.onAuthStateChange?.(res.data);
+      } else if (res.error_code === 4003) {
+        // Grant revoked — the API client already redirects to the
+        // unauthorized page. Keep isLoading true so the loading fallback
+        // stays visible during the redirect (no flash of protected content).
+        cfg.onAuthStateChange?.(null);
+      } else if (
+        cfg.redirectOnUnauthenticated &&
+        cfg.loginUrl &&
+        typeof window !== "undefined"
+      ) {
+        // Not authenticated — redirect to login. Keep isLoading true so
+        // the loading fallback stays visible during the redirect.
+        sessionStorage.setItem("returnUrl", window.location.pathname);
+        window.location.href = cfg.loginUrl;
+        cfg.onAuthStateChange?.(null);
+      } else {
+        // Not authenticated, no redirect configured — let the app decide.
+        setIsLoggedIn(false);
+        setUser(null);
+        setIsLoading(false);
+        cfg.onAuthStateChange?.(null);
+      }
+    } catch (err) {
+      console.warn("forta-js: checkAuth failed:", err);
+
+      if (
+        cfg.redirectOnUnauthenticated &&
+        cfg.loginUrl &&
+        typeof window !== "undefined"
+      ) {
+        window.location.href = cfg.loginUrl;
+        cfg.onAuthStateChange?.(null);
       } else {
         setIsLoggedIn(false);
         setUser(null);
         setIsLoading(false);
         cfg.onAuthStateChange?.(null);
-
-        if (
-          cfg.redirectOnUnauthenticated &&
-          cfg.loginUrl &&
-          typeof window !== "undefined"
-        ) {
-          sessionStorage.setItem("returnUrl", window.location.pathname);
-          window.location.href = cfg.loginUrl;
-        }
       }
-    } catch (err) {
-      console.warn("forta-js: checkAuth failed:", err);
-      setIsLoggedIn(false);
-      setUser(null);
-      setIsLoading(false);
-      cfg.onAuthStateChange?.(null);
     }
   }, [apiClient]);
 
@@ -202,7 +252,11 @@ export function FortaProvider({ config, children }: FortaProviderProps) {
     [isLoggedIn, isLoading, user, login, logout, checkAuth, apiClient],
   );
 
+  const showLoading = isLoading && loadingFallback != null;
+
   return (
-    <FortaContext.Provider value={value}>{children}</FortaContext.Provider>
+    <FortaContext.Provider value={value}>
+      {showLoading ? loadingFallback : children}
+    </FortaContext.Provider>
   );
 }

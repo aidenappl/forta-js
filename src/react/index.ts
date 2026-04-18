@@ -1,25 +1,6 @@
 "use client";
 
-// ── React adapter for Forta authentication ──────────────────────────────────
-//
-// Usage:
-//
-//   import { FortaProvider, useForta, useFortaUser } from 'forta-js/react';
-//
-//   // Wrap your app:
-//   <FortaProvider config={{
-//     apiUrl: process.env.NEXT_PUBLIC_API_URL,
-//     loginUrl: `${process.env.NEXT_PUBLIC_API_URL}/forta/login`,
-//     logoutUrl: `${process.env.NEXT_PUBLIC_API_URL}/forta/logout`,
-//   }}>
-//     <App />
-//   </FortaProvider>
-//
-//   // In components:
-//   const { isLoggedIn, user, login, logout, apiClient } = useForta();
-//
-// The provider is the "base forta store" — apps compose their own state
-// management (Redux, Zustand, Context, etc.) around it.
+// ── Provider & hooks ────────────────────────────────────────────────────────
 
 export { FortaProvider } from "./provider";
 export type {
@@ -30,6 +11,8 @@ export type {
 
 export { useForta, useFortaUser, useAuthStatus, useFortaApi } from "./hooks";
 
+// ── API client ──────────────────────────────────────────────────────────────
+
 export {
     createFortaApiClient,
     type FortaApiClient,
@@ -37,7 +20,14 @@ export {
     type RequestConfig,
 } from "./api-client";
 
-// Re-export core types for convenience.
+// ── Components ──────────────────────────────────────────────────────────────
+
+export { UnauthorizedPage, type UnauthorizedPageProps } from "./components/unauthorized-page";
+export { LoadingScreen, type LoadingScreenProps } from "./components/loading-screen";
+export { FortaLogo, type FortaLogoProps } from "./components/forta-logo";
+
+// ── Core types (re-exported for convenience) ────────────────────────────────
+
 export type {
     User,
     UserPublic,

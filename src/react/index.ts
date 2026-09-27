@@ -18,6 +18,8 @@ export {
     type FortaApiClient,
     type FortaApiClientConfig,
     type RequestConfig,
+    type FortaRequestFailure,
+    type FortaRequestFailureKind,
 } from "./api-client";
 
 // ── Components ──────────────────────────────────────────────────────────────

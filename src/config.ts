@@ -88,6 +88,61 @@ export interface FortaConfig {
      * Default: false (refresh enabled).
      */
     disableAutoRefresh?: boolean;
+
+    /**
+     * fetch implementation used for every call to the Forta API. Defaults to
+     * the global fetch. Useful for instrumentation or tests.
+     */
+    fetch?: typeof fetch;
+
+    /**
+     * Extra headers sent on every call to the Forta API (for example a
+     * service-level trace header). Per-call headers — including the inbound
+     * X-Request-ID / traceparent / X-Trace-ID forwarded by protect() — take
+     * precedence, and Authorization / Content-Type can never be overridden.
+     */
+    getHeaders?: () => Record<string, string>;
+
+    /**
+     * Called whenever authentication fails or an upstream error is swallowed
+     * (for example /auth/self being unreachable before a transparent refresh).
+     * Never changes the response protect() or the handlers send. Exceptions
+     * thrown by the hook are ignored.
+     */
+    onAuthFailure?: (info: FortaAuthFailure) => void;
+}
+
+/**
+ * Why authentication failed. Mirrors the reason strings used by go-forta.
+ *
+ * - missing_credential   — no access token on the request
+ * - token_invalid        — token malformed, badly signed, or rejected by Forta
+ * - token_expired        — token expired and no refresh was possible
+ * - refresh_failed       — the refresh token was rejected
+ * - upstream_unavailable — Forta was unreachable, timed out or returned 5xx
+ * - grant_denied         — Forta returned 403 (grant revoked / not granted)
+ * - exchange_failed      — the OAuth2 code exchange failed
+ */
+export type FortaAuthFailureReason =
+    | "missing_credential"
+    | "token_invalid"
+    | "token_expired"
+    | "refresh_failed"
+    | "upstream_unavailable"
+    | "grant_denied"
+    | "exchange_failed";
+
+/** Payload passed to FortaConfig.onAuthFailure. */
+export interface FortaAuthFailure {
+    reason: FortaAuthFailureReason;
+    /** HTTP status Forta returned (absent for network errors and local checks). */
+    status?: number;
+    /** The underlying error, when there is one. */
+    error?: unknown;
+    /** The inbound request's X-Request-ID (forwarded to Forta), when present. */
+    requestId?: string;
+    /** The X-Request-ID Forta echoed on its response, when available. */
+    upstreamRequestId?: string;
 }
 
 /** Validates that required config fields are present. Throws on invalid config. */

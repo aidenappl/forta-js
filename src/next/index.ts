@@ -35,6 +35,14 @@ import type { FortaConfig } from "../config";
 import { getPostLoginRedirect, getPostLogoutRedirect } from "../config";
 import { validateAccessTokenLocal, isTokenExpiredError } from "../token";
 import type { User, TokenPair, AuthResponse } from "../types";
+import type { FortaCallOptions } from "../client";
+import type { FortaAuthFailure } from "../config";
+import {
+    failureFromError,
+    forwardedCallOptions,
+    isUpstreamError,
+    reportAuthFailure,
+} from "../failure";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -205,6 +213,13 @@ function extractTokenFromNextRequest(request: NextRequest): string | null {
     return null;
 }
 
+/** Correlation headers from the inbound request, forwarded to Forta. */
+function callOptionsFromNextRequest(request: NextRequest): FortaCallOptions {
+    return forwardedCallOptions(
+        (name) => request.headers.get(name) ?? undefined
+    );
+}
+
 function jsonError(
     NR: NextResponseStatic,
     status: number,
@@ -305,10 +320,19 @@ export async function callbackHandler(
     }
 
     // Exchange code for tokens.
+    const callOpts = callOptionsFromNextRequest(request);
     let authResp: AuthResponse;
     try {
-        authResp = await client.exchangeCode(code);
-    } catch {
+        authResp = await client.exchangeCode(code, callOpts);
+    } catch (err) {
+        reportAuthFailure(config, {
+            ...failureFromError(
+                err,
+                "exchange_failed",
+                callOpts.headers?.["x-request-id"]
+            ),
+            reason: "exchange_failed",
+        });
         return jsonError(NR, 401, "failed to exchange authorization code");
     }
 
@@ -364,8 +388,16 @@ export function protect(handler: ProtectedRouteHandler) {
         const client = requireClient();
         const config = client.config;
 
+        const callOpts = callOptionsFromNextRequest(request);
+        const requestId = callOpts.headers?.["x-request-id"];
+
         let tokenStr = extractTokenFromNextRequest(request);
         if (!tokenStr) {
+            reportAuthFailure(config, {
+                reason: "missing_credential",
+                status: 401,
+                ...(requestId ? { requestId } : {}),
+            });
             return jsonError(NR, 401, "missing or invalid authorization");
         }
 
@@ -379,11 +411,20 @@ export function protect(handler: ProtectedRouteHandler) {
                 userId = validateAccessTokenLocal(tokenStr, config.jwtSigningKey);
             } catch (err) {
                 if (!isTokenExpiredError(err) || config.disableAutoRefresh) {
+                    reportAuthFailure(config, {
+                        reason: isTokenExpiredError(err)
+                            ? "token_expired"
+                            : "token_invalid",
+                        status: 401,
+                        error: err,
+                        ...(requestId ? { requestId } : {}),
+                    });
                     return jsonError(NR, 401, "invalid or expired access token");
                 }
                 // Try refresh.
-                const refreshResult = await tryRefreshNext(client, request);
-                if (!refreshResult) {
+                const refreshResult = await tryRefreshNext(client, request, callOpts);
+                if (!refreshResult.ok) {
+                    reportAuthFailure(config, refreshResult.failure);
                     return jsonError(NR, 401, "session expired, please log in again");
                 }
                 tokenStr = refreshResult.accessToken;
@@ -393,36 +434,66 @@ export function protect(handler: ProtectedRouteHandler) {
 
             if (config.fetchUserOnProtect) {
                 try {
-                    user = await client.getUserInfo(tokenStr);
+                    user = await client.getUserInfo(tokenStr, callOpts);
                 } catch (fetchErr) {
                     console.warn(
                         "forta-js: fetchUserOnProtect: getUserInfo:",
                         fetchErr
+                    );
+                    reportAuthFailure(
+                        config,
+                        failureFromError(fetchErr, "token_invalid", requestId)
                     );
                 }
             }
         } else {
             // ── Remote validation via /auth/self ───────────────────────────────
             try {
-                user = await client.getUserInfo(tokenStr);
+                user = await client.getUserInfo(tokenStr, callOpts);
                 userId = user.id;
-            } catch {
+            } catch (selfErr) {
                 if (config.disableAutoRefresh) {
+                    reportAuthFailure(
+                        config,
+                        failureFromError(selfErr, "token_invalid", requestId)
+                    );
                     return jsonError(NR, 401, "invalid or expired access token");
                 }
-                const refreshResult = await tryRefreshNext(client, request);
-                if (!refreshResult) {
+                const refreshResult = await tryRefreshNext(client, request, callOpts);
+                if (!refreshResult.ok) {
+                    // An outage on /auth/self is the real cause even though
+                    // the response is still a 401.
+                    reportAuthFailure(
+                        config,
+                        isUpstreamError(selfErr)
+                            ? failureFromError(selfErr, "token_invalid", requestId)
+                            : refreshResult.failure
+                    );
                     return jsonError(NR, 401, "session expired, please log in again");
+                }
+                if (isUpstreamError(selfErr)) {
+                    // Refresh masked an /auth/self outage — still report it.
+                    reportAuthFailure(
+                        config,
+                        failureFromError(selfErr, "token_invalid", requestId)
+                    );
                 }
                 userId = refreshResult.userId;
                 pendingTokens = refreshResult.tokens;
                 if (refreshResult.accessToken) {
                     try {
-                        const nu = await client.getUserInfo(refreshResult.accessToken);
+                        const nu = await client.getUserInfo(
+                            refreshResult.accessToken,
+                            callOpts
+                        );
                         user = nu;
                         userId = nu.id;
-                    } catch {
+                    } catch (postErr) {
                         // Continue with userId from refresh.
+                        reportAuthFailure(
+                            config,
+                            failureFromError(postErr, "token_invalid", requestId)
+                        );
                     }
                 }
             }
@@ -456,31 +527,42 @@ export function protect(handler: ProtectedRouteHandler) {
 
 // ── Refresh helper for Next.js ──────────────────────────────────────────────
 
-interface NextRefreshResult {
-    userId: number;
-    accessToken: string;
-    tokens: TokenPair;
-}
+type NextRefreshResult =
+    | { ok: true; userId: number; accessToken: string; tokens: TokenPair }
+    | { ok: false; failure: FortaAuthFailure };
 
 async function tryRefreshNext(
     client: FortaClient,
-    request: NextRequest
-): Promise<NextRefreshResult | null> {
+    request: NextRequest,
+    callOpts: FortaCallOptions
+): Promise<NextRefreshResult> {
+    const requestId = callOpts.headers?.["x-request-id"];
     const refreshCookie = request.cookies.get(COOKIE_REFRESH_TOKEN);
     if (!refreshCookie?.value) {
-        return null;
+        return {
+            ok: false,
+            failure: {
+                reason: "token_expired",
+                status: 401,
+                ...(requestId ? { requestId } : {}),
+            },
+        };
     }
 
     try {
-        const authResp = await client.refreshTokens(refreshCookie.value);
+        const authResp = await client.refreshTokens(refreshCookie.value, callOpts);
         return {
+            ok: true,
             userId: authResp.user.id,
             accessToken: authResp.authorization.access_token,
             tokens: authResp.authorization,
         };
     } catch (err) {
         console.warn("forta-js: auto-refresh failed:", err);
-        return null;
+        return {
+            ok: false,
+            failure: failureFromError(err, "refresh_failed", requestId),
+        };
     }
 }
 
@@ -495,5 +577,7 @@ export async function fetchCurrentUser(request: NextRequest): Promise<User> {
     if (!token) {
         throw new Error("forta-js: no access token found in request");
     }
-    return client.getUserInfo(token);
+    return client.getUserInfo(token, callOptionsFromNextRequest(request));
 }
+
+export type { FortaAuthFailure, FortaAuthFailureReason } from "../config";

@@ -10,6 +10,12 @@ import {
     COOKIE_OAUTH_STATE,
 } from "./cookies";
 import { writeJsonError } from "./errors";
+import {
+    failureFromError,
+    firstHeader,
+    forwardedCallOptions,
+    reportAuthFailure,
+} from "./failure";
 import { generateState } from "./helpers";
 
 /**
@@ -123,10 +129,21 @@ export function createCallbackHandler(client: FortaClient) {
         clearStateCookie(res, config);
 
         // Exchange code for token pair.
+        const callOpts = forwardedCallOptions((name) =>
+            firstHeader(req.headers[name])
+        );
         let authResp;
         try {
-            authResp = await client.exchangeCode(code);
-        } catch {
+            authResp = await client.exchangeCode(code, callOpts);
+        } catch (err) {
+            reportAuthFailure(config, {
+                ...failureFromError(
+                    err,
+                    "exchange_failed",
+                    callOpts.headers?.["x-request-id"]
+                ),
+                reason: "exchange_failed",
+            });
             writeJsonError(res, 401, "failed to exchange authorization code");
             return;
         }

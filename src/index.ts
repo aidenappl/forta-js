@@ -33,13 +33,19 @@ import {
     createCallbackHandler,
     createLogoutHandler,
 } from "./handlers";
+import { firstHeader, forwardedCallOptions } from "./failure";
 import { extractToken } from "./helpers";
 import { createProtect } from "./middleware";
 import type { RequestHandler } from "./middleware";
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
-export type { FortaConfig } from "./config";
+export type {
+    FortaConfig,
+    FortaAuthFailure,
+    FortaAuthFailureReason,
+} from "./config";
+export type { FortaCallOptions, FortaRequestError } from "./client";
 export type {
     User,
     UserPublic,
@@ -151,7 +157,10 @@ async function fetchCurrentUser(req: IncomingMessage) {
     if (!token) {
         throw new Error("forta-js: no access token found in request");
     }
-    return client.getUserInfo(token);
+    return client.getUserInfo(
+        token,
+        forwardedCallOptions((name) => firstHeader(req.headers[name]))
+    );
 }
 
 // ── Default export ──────────────────────────────────────────────────────────

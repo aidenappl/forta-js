@@ -11,9 +11,12 @@ import {
 import type { ReactNode } from "react";
 import type { User } from "../types";
 import {
-  createFortaApiClient,
+  createFortaApiClientCore,
   type FortaApiClient,
   type FortaApiClientConfig,
+  type FortaFetchMeta,
+  type FortaRequestFailure,
+  type RequestConfig,
 } from "./api-client";
 
 // ── Public types ────────────────────────────────────────────────────────────
@@ -71,6 +74,31 @@ export interface FortaProviderConfig {
    * Set to null to disable automatic handling.
    */
   unauthorizedPath?: string | null;
+
+  /**
+   * Called once per outgoing request made through the provider's API client
+   * (including the /self check and refresh). A returned id is sent in
+   * `requestIdHeader`. The API's CORS AllowedHeaders must include that
+   * header. May be an inline function — it is read through a ref, so changing
+   * it never rebuilds the client.
+   */
+  requestId?: () => string | undefined;
+
+  /** Header the value from requestId() is sent in. Default: "X-Request-ID". */
+  requestIdHeader?: string;
+
+  /** Extra headers for each request (e.g. `traceparent`). Read through a ref. */
+  getHeaders?: (req: RequestConfig) => Record<string, string>;
+
+  /** fetch implementation to use. Defaults to the global fetch. Read through a ref. */
+  fetch?: typeof fetch;
+
+  /**
+   * Called when a request fails (see FortaRequestFailure). The initial auth
+   * check additionally reports kind "session_check_failed" when it fails for
+   * a reason other than the user being logged out. Read through a ref.
+   */
+  onRequestFailure?: (failure: FortaRequestFailure) => void;
 }
 
 /** The auth state and helpers exposed by the Forta context. */
@@ -95,6 +123,39 @@ export interface FortaAuthContext {
 
   /** The configured Forta API client for making authenticated requests. */
   apiClient: FortaApiClient;
+}
+
+// ── Failure helpers ─────────────────────────────────────────────────────────
+
+/**
+ * A failed /self check means "logged out" only when the API answered with a
+ * normal auth error. Network errors, timeouts, 5xx, unparseable bodies and an
+ * unreachable refresh endpoint mean the session state is unknown.
+ */
+function isSessionCheckFailure(
+  status: number,
+  errorCode: number,
+  meta: FortaFetchMeta,
+): boolean {
+  if (errorCode === 4003) return false;
+  if (status >= 500) return true;
+  return meta.failures.some(
+    (f) =>
+      f.kind === "network" ||
+      f.kind === "timeout" ||
+      f.kind === "http" ||
+      f.kind === "parse" ||
+      (f.kind === "refresh_failed" && (f.status === undefined || f.status >= 500)),
+  );
+}
+
+function reportFailure(cfg: FortaProviderConfig, failure: FortaRequestFailure) {
+  if (!cfg.onRequestFailure) return;
+  try {
+    cfg.onRequestFailure(failure);
+  } catch {
+    // Hooks must never affect the auth check.
+  }
 }
 
 // ── Context ─────────────────────────────────────────────────────────────────
@@ -124,14 +185,29 @@ export function FortaProvider({ config, children, loadingFallback }: FortaProvid
   const configRef = useRef(config);
   configRef.current = config;
 
-  const apiClient = useMemo<FortaApiClient>(() => {
+  // Callbacks are forwarded through configRef so inline functions never
+  // rebuild the client (which would also reset the refresh dedupe).
+  const clientCore = useMemo(() => {
     const clientConfig: FortaApiClientConfig = {
       apiUrl: config.apiUrl,
       refreshEndpoint: config.refreshEndpoint,
       unauthorizedPath: config.unauthorizedPath,
+      requestIdHeader: config.requestIdHeader,
+      requestId: () => configRef.current.requestId?.(),
+      getHeaders: (req) => configRef.current.getHeaders?.(req) ?? {},
+      fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
+        const custom = configRef.current.fetch;
+        return custom ? custom(input, init) : fetch(input, init);
+      }) as typeof fetch,
+      onRequestFailure: (failure) => configRef.current.onRequestFailure?.(failure),
     };
-    return createFortaApiClient(clientConfig);
-  }, [config.apiUrl, config.refreshEndpoint, config.unauthorizedPath]);
+    return createFortaApiClientCore(clientConfig);
+  }, [config.apiUrl, config.refreshEndpoint, config.unauthorizedPath, config.requestIdHeader]);
+
+  const apiClient = useMemo<FortaApiClient>(
+    () => ({ fetch: clientCore.fetch }),
+    [clientCore],
+  );
 
   const checkAuth = useCallback(async () => {
     const cfg = configRef.current;
@@ -169,10 +245,23 @@ export function FortaProvider({ config, children, loadingFallback }: FortaProvid
       }
 
       const selfEndpoint = cfg.selfEndpoint ?? "/auth/self";
-      const res = await apiClient.fetch<User>({
+      const { response: res, meta } = await clientCore.fetchWithMeta<User>({
         method: "GET",
         url: selfEndpoint,
       });
+
+      if (!res.success && isSessionCheckFailure(res.status, res.error_code, meta)) {
+        const last = meta.failures[meta.failures.length - 1];
+        reportFailure(cfg, {
+          kind: "session_check_failed",
+          method: "GET",
+          url: selfEndpoint,
+          status: meta.status,
+          requestId: meta.requestId,
+          responseRequestId: meta.responseRequestId,
+          error: last?.error ?? res.error_message,
+        });
+      }
 
       if (res.success) {
         setIsLoggedIn(true);
@@ -203,6 +292,12 @@ export function FortaProvider({ config, children, loadingFallback }: FortaProvid
       }
     } catch (err) {
       console.warn("forta-js: checkAuth failed:", err);
+      reportFailure(cfg, {
+        kind: "session_check_failed",
+        method: "GET",
+        url: cfg.selfEndpoint ?? "/auth/self",
+        error: err,
+      });
 
       if (
         cfg.redirectOnUnauthenticated &&
@@ -218,7 +313,7 @@ export function FortaProvider({ config, children, loadingFallback }: FortaProvid
         cfg.onAuthStateChange?.(null);
       }
     }
-  }, [apiClient]);
+  }, [clientCore]);
 
   useEffect(() => {
     checkAuth();

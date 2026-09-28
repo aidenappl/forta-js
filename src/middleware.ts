@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { FortaClient } from "./client";
+import type { FortaCallOptions } from "./client";
+import type { FortaAuthFailure } from "./config";
 import { setFortaId, setFortaUser } from "./context";
 import {
     parseCookies,
@@ -7,6 +9,13 @@ import {
     COOKIE_REFRESH_TOKEN,
 } from "./cookies";
 import { writeJsonError } from "./errors";
+import {
+    failureFromError,
+    firstHeader,
+    forwardedCallOptions,
+    isUpstreamError,
+    reportAuthFailure,
+} from "./failure";
 import { extractToken } from "./helpers";
 import { validateAccessTokenLocal, isTokenExpiredError } from "./token";
 import type { User } from "./types";
@@ -41,16 +50,28 @@ export function createProtect(client: FortaClient) {
             res: ServerResponse,
             expressNext?: () => void
         ): Promise<void> {
+            const config = client.config;
+            // Correlation headers from the inbound request are forwarded on
+            // every call this request makes to Forta.
+            const callOpts = forwardedCallOptions((name) =>
+                firstHeader(req.headers[name])
+            );
+            const requestId = callOpts.headers?.["x-request-id"];
+
             let tokenStr = extractToken(req);
 
             if (!tokenStr) {
+                reportAuthFailure(config, {
+                    reason: "missing_credential",
+                    status: 401,
+                    ...(requestId ? { requestId } : {}),
+                });
                 writeJsonError(res, 401, "missing or invalid authorization");
                 return;
             }
 
             let userId: number = 0;
             let user: User | null = null;
-            const config = client.config;
 
             if (config.jwtSigningKey) {
                 // ── Local JWT validation ────────────────────────────────────────
@@ -58,13 +79,22 @@ export function createProtect(client: FortaClient) {
                     userId = validateAccessTokenLocal(tokenStr, config.jwtSigningKey);
                 } catch (err) {
                     if (!isTokenExpiredError(err) || config.disableAutoRefresh) {
+                        reportAuthFailure(config, {
+                            reason: isTokenExpiredError(err)
+                                ? "token_expired"
+                                : "token_invalid",
+                            status: 401,
+                            error: err,
+                            ...(requestId ? { requestId } : {}),
+                        });
                         writeJsonError(res, 401, "invalid or expired access token");
                         return;
                     }
 
                     // Access token is expired — try to refresh transparently.
-                    const refreshResult = await tryRefresh(client, req, res);
-                    if (!refreshResult) {
+                    const refreshResult = await tryRefresh(client, req, res, callOpts);
+                    if (!refreshResult.ok) {
+                        reportAuthFailure(config, refreshResult.failure);
                         writeJsonError(
                             res,
                             401,
@@ -79,29 +109,45 @@ export function createProtect(client: FortaClient) {
 
                 if (config.fetchUserOnProtect) {
                     try {
-                        user = await client.getUserInfo(tokenStr);
+                        user = await client.getUserInfo(tokenStr, callOpts);
                     } catch (fetchErr) {
                         // Non-fatal: the user ID is valid, continue without full profile.
                         console.warn(
                             "forta-js: fetchUserOnProtect: getUserInfo:",
                             fetchErr
                         );
+                        reportAuthFailure(
+                            config,
+                            failureFromError(fetchErr, "token_invalid", requestId)
+                        );
                     }
                 }
             } else {
                 // ── Remote validation via /auth/self ─────────────────────────────
                 try {
-                    user = await client.getUserInfo(tokenStr);
+                    user = await client.getUserInfo(tokenStr, callOpts);
                     userId = user.id;
-                } catch {
+                } catch (selfErr) {
                     if (config.disableAutoRefresh) {
+                        reportAuthFailure(
+                            config,
+                            failureFromError(selfErr, "token_invalid", requestId)
+                        );
                         writeJsonError(res, 401, "invalid or expired access token");
                         return;
                     }
 
                     // Try to refresh using the refresh token cookie.
-                    const refreshResult = await tryRefresh(client, req, res);
-                    if (!refreshResult) {
+                    const refreshResult = await tryRefresh(client, req, res, callOpts);
+                    if (!refreshResult.ok) {
+                        // An outage on /auth/self is the real cause even though
+                        // the response is still a 401.
+                        reportAuthFailure(
+                            config,
+                            isUpstreamError(selfErr)
+                                ? failureFromError(selfErr, "token_invalid", requestId)
+                                : refreshResult.failure
+                        );
                         writeJsonError(
                             res,
                             401,
@@ -109,18 +155,30 @@ export function createProtect(client: FortaClient) {
                         );
                         return;
                     }
+                    if (isUpstreamError(selfErr)) {
+                        // Refresh masked an /auth/self outage — still report it.
+                        reportAuthFailure(
+                            config,
+                            failureFromError(selfErr, "token_invalid", requestId)
+                        );
+                    }
                     userId = refreshResult.userId;
 
                     // Fetch the updated profile with the new token.
                     if (refreshResult.accessToken) {
                         try {
                             const nu = await client.getUserInfo(
-                                refreshResult.accessToken
+                                refreshResult.accessToken,
+                                callOpts
                             );
                             user = nu;
                             userId = nu.id;
-                        } catch {
+                        } catch (postErr) {
                             // Continue with userId from refresh.
+                            reportAuthFailure(
+                                config,
+                                failureFromError(postErr, "token_invalid", requestId)
+                            );
                         }
                     }
                 }
@@ -137,35 +195,47 @@ export function createProtect(client: FortaClient) {
     };
 }
 
-interface RefreshResult {
-    userId: number;
-    accessToken: string;
-}
+type RefreshResult =
+    | { ok: true; userId: number; accessToken: string }
+    | { ok: false; failure: FortaAuthFailure };
 
 /**
  * tryRefresh reads the forta-refresh-token cookie, calls /auth/refresh, and on
- * success sets the new auth cookies. Returns null if refresh failed.
+ * success sets the new auth cookies. On failure it returns the reason.
  */
 async function tryRefresh(
     client: FortaClient,
     req: IncomingMessage,
-    res: ServerResponse
-): Promise<RefreshResult | null> {
+    res: ServerResponse,
+    callOpts: FortaCallOptions
+): Promise<RefreshResult> {
+    const requestId = callOpts.headers?.["x-request-id"];
     const cookies = parseCookies(req);
     const refreshToken = cookies[COOKIE_REFRESH_TOKEN];
     if (!refreshToken) {
-        return null;
+        return {
+            ok: false,
+            failure: {
+                reason: "token_expired",
+                status: 401,
+                ...(requestId ? { requestId } : {}),
+            },
+        };
     }
 
     try {
-        const authResp = await client.refreshTokens(refreshToken);
+        const authResp = await client.refreshTokens(refreshToken, callOpts);
         setAuthCookies(res, client.config, authResp.authorization);
         return {
+            ok: true,
             userId: authResp.user.id,
             accessToken: authResp.authorization.access_token,
         };
     } catch (err) {
         console.warn("forta-js: auto-refresh failed:", err);
-        return null;
+        return {
+            ok: false,
+            failure: failureFromError(err, "refresh_failed", requestId),
+        };
     }
 }
